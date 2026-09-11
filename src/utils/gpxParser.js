@@ -42,7 +42,7 @@ export function getOfflineRegion(lat, lng) {
 }
 
 // ----------------------------------------------------------------------
-// Path B: Routing & Trail Snapping (OSRM)
+// Path B: Routing & Trail Snapping (BRouter with OSRM Fallback)
 // ----------------------------------------------------------------------
 
 export async function fetchSnappedRouteLeg(fromCoord, toCoord, mode = 'foot') {
@@ -54,21 +54,47 @@ export async function fetchSnappedRouteLeg(fromCoord, toCoord, mode = 'foot') {
     ];
   }
 
-  const profile = mode === 'bike' ? 'bike' : 'foot';
-  const url = `https://router.project-osrm.org/route/v1/${profile}/${fromCoord.lng},${fromCoord.lat};${toCoord.lng},${toCoord.lat}?overview=full&geometries=geojson`;
+  // 1. Primary: BRouter (Follows footpaths, mountain trails, bridleways, tracks, and roads)
+  const brouterProfile = mode === 'bike' ? 'trekking' : 'hiking-mountain';
+  const brouterUrl = `https://brouter.de/brouter?lonlats=${fromCoord.lng},${fromCoord.lat}|${toCoord.lng},${toCoord.lat}&profile=${brouterProfile}&format=geojson`;
 
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Routing request failed');
-    const data = await res.json();
-    if (data.routes && data.routes.length > 0) {
-      return data.routes[0].geometry.coordinates; // Array of [lng, lat]
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(brouterUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.features && data.features.length > 0 && data.features[0]?.geometry?.coordinates?.length > 0) {
+        return data.features[0].geometry.coordinates; // Array of [lng, lat, ele?]
+      }
     }
   } catch (err) {
-    console.warn('OSRM routing failed, falling back to straight line:', err);
+    console.warn('BRouter routing request failed, falling back to OSRM:', err.message || err);
   }
 
-  // Fallback if snapping fails
+  // 2. Secondary Fallback: OSRM
+  const osrmProfile = mode === 'bike' ? 'bike' : 'foot';
+  const osrmUrl = `https://router.project-osrm.org/route/v1/${osrmProfile}/${fromCoord.lng},${fromCoord.lat};${toCoord.lng},${toCoord.lat}?overview=full&geometries=geojson&radiuses=unlimited;unlimited`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(osrmUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.routes && data.routes.length > 0 && data.routes[0]?.geometry?.coordinates?.length > 0) {
+        return data.routes[0].geometry.coordinates; // Array of [lng, lat]
+      }
+    }
+  } catch (err) {
+    console.warn('OSRM routing fallback failed, falling back to straight line:', err.message || err);
+  }
+
+  // 3. Final Fallback: Straight line
   return [
     [fromCoord.lng, fromCoord.lat],
     [toCoord.lng, toCoord.lat],
@@ -123,6 +149,64 @@ export async function enrichCoordinatesWithElevation(coordinates) {
     console.warn('Elevation lookup failed, defaulting to 0m:', err);
     return coordinates.map((c) => [c[0], c[1], 0]);
   }
+}
+
+// ----------------------------------------------------------------------
+// Path A2: Enrich existing GPX XML with Open-Meteo elevation data
+// ----------------------------------------------------------------------
+
+export async function enrichGpxXmlWithElevation(rawXmlString) {
+  if (!rawXmlString) throw new Error('No GPX XML provided');
+
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(rawXmlString, 'application/xml');
+
+  if (xmlDoc.querySelector('parsererror')) {
+    throw new Error('Invalid GPX XML');
+  }
+
+  // Support track points and route points
+  let points = Array.from(xmlDoc.querySelectorAll('trkpt'));
+  if (points.length === 0) {
+    points = Array.from(xmlDoc.querySelectorAll('rtept'));
+  }
+
+  if (points.length === 0) {
+    throw new Error('No track or route points found to enrich with elevation.');
+  }
+
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < points.length; i += BATCH_SIZE) {
+    const chunk = points.slice(i, i + BATCH_SIZE);
+    const lats = chunk.map((pt) => parseFloat(pt.getAttribute('lat')).toFixed(5)).join(',');
+    const lngs = chunk.map((pt) => parseFloat(pt.getAttribute('lon')).toFixed(5)).join(',');
+
+    const url = `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Open-Meteo elevation API error (HTTP ${res.status})`);
+    }
+
+    const data = await res.json();
+    const elevations = data.elevation || [];
+
+    chunk.forEach((pt, idx) => {
+      let eleNode = pt.querySelector('ele');
+      if (!eleNode) {
+        eleNode = pt.namespaceURI
+          ? xmlDoc.createElementNS(pt.namespaceURI, 'ele')
+          : xmlDoc.createElement('ele');
+        if (pt.firstChild) {
+          pt.insertBefore(eleNode, pt.firstChild);
+        } else {
+          pt.appendChild(eleNode);
+        }
+      }
+      eleNode.textContent = String(Math.round(elevations[idx] || 0));
+    });
+  }
+
+  return new XMLSerializer().serializeToString(xmlDoc);
 }
 
 // ----------------------------------------------------------------------
@@ -234,6 +318,8 @@ export function parseGpxFile(fileName, rawXmlString) {
         elevationProfile.push({
           distance: parseFloat(runningDist.toFixed(2)),
           elevation: Math.round(segment[i][2] || 0),
+          lat: segment[i][1],
+          lng: segment[i][0],
         });
       }
       profileIndex++;
@@ -254,6 +340,7 @@ export function parseGpxFile(fileName, rawXmlString) {
     rawXml: rawXmlString,
     title,
     geojson,
+    rawCoordinates: rawPoints,
     distanceKm: parseFloat(totalDistanceKm.toFixed(2)),
     elevationGainM: Math.round(elevationGainM),
     elevationProfile,

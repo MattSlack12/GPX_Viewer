@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
+import { distanceToKm, DISTANCE_UNITS } from '../utils/units';
 
-export default function useRouteFilters(routes) {
+export default function useRouteFilters(routes, distanceUnit = DISTANCE_UNITS.KM) {
   const [filters, setFilters] = useState({
     keyword: '',
     minDistance: '',
@@ -25,12 +26,15 @@ export default function useRouteFilters(routes) {
 
       const minDistance = Number.parseFloat(filters.minDistance);
       const maxDistance = Number.parseFloat(filters.maxDistance);
-      if (!Number.isNaN(minDistance) && route.distanceKm < minDistance) return false;
-      if (!Number.isNaN(maxDistance) && route.distanceKm > maxDistance) return false;
+      const minKm = !Number.isNaN(minDistance) ? distanceToKm(minDistance, distanceUnit) : null;
+      const maxKm = !Number.isNaN(maxDistance) ? distanceToKm(maxDistance, distanceUnit) : null;
+
+      if (minKm !== null && route.distanceKm < minKm) return false;
+      if (maxKm !== null && route.distanceKm > maxKm) return false;
       if (filters.region !== 'all' && route.region !== filters.region) return false;
       return true;
     });
-  }, [routes, filters]);
+  }, [routes, filters, distanceUnit]);
 
   return { filters, setFilters, availableRegions, filteredRoutes };
 }

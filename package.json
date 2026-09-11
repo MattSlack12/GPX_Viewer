@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "start": "concurrently \"node server.js\" \"vite\"",
     "dev": "concurrently \"node server.js\" \"vite\"",
+    "start": "concurrently \"node --watch server.js\" \"vite\"",
+    "dev": "concurrently \"node --watch server.js\" \"vite\"",
     "build": "vite build",
     "lint": "eslint .",
     "test": "vitest run",
