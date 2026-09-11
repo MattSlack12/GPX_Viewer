@@ -38,3 +38,6 @@ The parser tests cover multi-segment routes, elevation and distance metrics, XML
 - Upload GPX files or draw walking, cycling, and straight-line routes.
 - Snap drawn route legs through OSRM and enrich them with Open-Meteo elevation data.
 - Download any route as a GPX file.
+
+<img width="2529" height="1347" alt="image" src="https://github.com/user-attachments/assets/58a7c421-f676-4cf2-8f73-0d31b73865f7" />
+
